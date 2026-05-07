@@ -19,18 +19,18 @@ terraform {
   }
 }
 
+# -------------------------------
 # Primary S3 bucket
+# -------------------------------
 resource "aws_s3_bucket" "s3_tf" {
   bucket = "osy-ce12m3l2-bucket"
 }
 
-# Event notifications (EventBridge)
 resource "aws_s3_bucket_notification" "s3_events" {
   bucket      = aws_s3_bucket.s3_tf.id
   eventbridge = true
 }
 
-# Public access block
 resource "aws_s3_bucket_public_access_block" "s3_block" {
   bucket                  = aws_s3_bucket.s3_tf.id
   block_public_acls       = true
@@ -39,7 +39,6 @@ resource "aws_s3_bucket_public_access_block" "s3_block" {
   restrict_public_buckets = true
 }
 
-# Lifecycle configuration
 resource "aws_s3_bucket_lifecycle_configuration" "s3_lifecycle" {
   bucket = aws_s3_bucket.s3_tf.id
 
@@ -48,16 +47,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "s3_lifecycle" {
     status = "Enabled"
 
     filter {
-      prefix = "" # applies to all objects
+      prefix = ""
     }
 
     expiration {
       days = 30
     }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 
-# Versioning
 resource "aws_s3_bucket_versioning" "s3_versioning" {
   bucket = aws_s3_bucket.s3_tf.id
 
@@ -66,7 +68,6 @@ resource "aws_s3_bucket_versioning" "s3_versioning" {
   }
 }
 
-# Encryption with KMS
 resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
   bucket = aws_s3_bucket.s3_tf.id
 
@@ -81,32 +82,93 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
 resource "aws_kms_key" "s3_key" {
   description             = "KMS key for S3 bucket encryption"
   deletion_window_in_days = 10
+  enable_key_rotation     = true
 }
 
-# Logging target bucket
+# -------------------------------
+# Replica bucket
+# -------------------------------
+resource "aws_s3_bucket" "replica" {
+  bucket = "osy-ce12m3l2-replica"
+}
+
+resource "aws_s3_bucket_public_access_block" "replica_block" {
+  bucket                  = aws_s3_bucket.replica.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# -------------------------------
+# Logging bucket
+# -------------------------------
 resource "aws_s3_bucket" "s3_logs" {
   bucket = "osy-ce12m3l2-logs"
 }
 
-# Attach logging to main bucket
-resource "aws_s3_bucket_logging" "s3_logging" {
-  bucket        = aws_s3_bucket.s3_tf.id
+resource "aws_s3_bucket_notification" "s3_logs_events" {
+  bucket      = aws_s3_bucket.s3_logs.id
+  eventbridge = true
+}
+
+resource "aws_s3_bucket_public_access_block" "s3_logs_block" {
+  bucket                  = aws_s3_bucket.s3_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "s3_logs_lifecycle" {
+  bucket = aws_s3_bucket.s3_logs.id
+
+  rule {
+    id     = "expire-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
+
+    expiration {
+      days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "replica_versioning" {
+  bucket = aws_s3_bucket.replica.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "replica_encryption" {
+  bucket = aws_s3_bucket.replica.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_logging" "replica_logging" {
+  bucket        = aws_s3_bucket.replica.id
   target_bucket = aws_s3_bucket.s3_logs.id
-  target_prefix = "log/"
+  target_prefix = "replica-log/"
 }
 
-# Destination bucket in another region for replication
-provider "aws" {
-  alias  = "replica"
-  region = "ap-northeast-1"
-}
-
-resource "aws_s3_bucket" "replica" {
-  provider = aws.replica
-  bucket   = "osy-ce12m3l2-replica"
-}
-
-# IAM role for replication
+# -------------------------------
+# Replication IAM role + policy
+# -------------------------------
 resource "aws_iam_role" "replication_role" {
   name = "s3-replication-role"
 
@@ -148,7 +210,6 @@ resource "aws_iam_role_policy" "replication_policy" {
   })
 }
 
-# Replication configuration
 resource "aws_s3_bucket_replication_configuration" "s3_replication" {
   bucket = aws_s3_bucket.s3_tf.id
   role   = aws_iam_role.replication_role.arn
