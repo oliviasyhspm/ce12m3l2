@@ -303,3 +303,80 @@ resource "aws_kms_key" "s3_key" {
     ]
   })
 }
+# Destination bucket in another region
+provider "aws" {
+  alias  = "secondary"
+  region = "ap-southeast-2"
+}
+
+resource "aws_s3_bucket" "s3_logs_replica" {
+  provider = aws.secondary
+  bucket   = "osy-ce12m3l2-logs-replica"
+}
+
+resource "aws_s3_bucket_versioning" "s3_logs_replica_versioning" {
+  provider = aws.secondary
+  bucket   = aws_s3_bucket.s3_logs_replica.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# IAM role for replication
+resource "aws_iam_role" "logs_replication_role" {
+  name = "s3-logs-replication-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "s3.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "logs_replication_policy" {
+  role = aws_iam_role.logs_replication_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetReplicationConfiguration",
+          "s3:ListBucket",
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:GetObjectVersionForReplication"
+        ]
+        Resource = [aws_s3_bucket.s3_logs.arn, "${aws_s3_bucket.s3_logs.arn}/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"]
+        Resource = [aws_s3_bucket.s3_logs_replica.arn, "${aws_s3_bucket.s3_logs_replica.arn}/*"]
+      }
+    ]
+  })
+}
+
+# Replication configuration
+resource "aws_s3_bucket_replication_configuration" "s3_logs_replication" {
+  bucket = aws_s3_bucket.s3_logs.id
+  role   = aws_iam_role.logs_replication_role.arn
+
+  rule {
+    id     = "replicate-logs"
+    status = "Enabled"
+
+    destination {
+      bucket        = aws_s3_bucket.s3_logs_replica.arn
+      storage_class = "STANDARD"
+    }
+  }
+}
