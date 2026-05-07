@@ -79,12 +79,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_encryption" {
   }
 }
 
-resource "aws_kms_key" "s3_key" {
-  description             = "KMS key for S3 bucket encryption"
-  deletion_window_in_days = 10
-  enable_key_rotation     = true
-}
-
 # -------------------------------
 # Replica bucket
 # -------------------------------
@@ -223,4 +217,89 @@ resource "aws_s3_bucket_replication_configuration" "s3_replication" {
       storage_class = "STANDARD"
     }
   }
+}
+# -------------------------------
+# Primary S3 bucket logging
+# -------------------------------
+resource "aws_s3_bucket_logging" "s3_tf_logging" {
+  bucket        = aws_s3_bucket.s3_tf.id
+  target_bucket = aws_s3_bucket.s3_logs.id
+  target_prefix = "s3-tf-log/"
+}
+
+# -------------------------------
+# Replica bucket compliance
+# -------------------------------
+resource "aws_s3_bucket_notification" "replica_events" {
+  bucket      = aws_s3_bucket.replica.id
+  eventbridge = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "replica_lifecycle" {
+  bucket = aws_s3_bucket.replica.id
+
+  rule {
+    id     = "expire-replica-objects"
+    status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
+
+    expiration {
+      days = 60
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+# -------------------------------
+# Logging bucket compliance
+# -------------------------------
+resource "aws_s3_bucket_versioning" "s3_logs_versioning" {
+  bucket = aws_s3_bucket.s3_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logs_encryption" {
+  bucket = aws_s3_bucket.s3_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+# -------------------------------
+# KMS key with explicit policy
+# -------------------------------
+data "aws_caller_identity" "current" {}
+
+resource "aws_kms_key" "s3_key" {
+  description             = "KMS key for S3 bucket encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccountAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
 }
