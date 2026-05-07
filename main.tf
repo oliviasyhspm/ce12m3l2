@@ -380,3 +380,61 @@ resource "aws_s3_bucket_replication_configuration" "s3_logs_replication" {
     }
   }
 }
+# -------------------------------
+# Cross-region Logging bucket compliance
+# -------------------------------
+resource "aws_s3_bucket_notification" "s3_logs_replica_events" {
+  provider    = aws.secondary
+  bucket      = aws_s3_bucket.s3_logs_replica.id
+  eventbridge = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "s3_logs_replica_lifecycle" {
+  provider = aws.secondary
+  bucket   = aws_s3_bucket.s3_logs_replica.id
+
+  rule {
+    id     = "expire-replica-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
+
+    expiration {
+      days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "s3_logs_replica_block" {
+  provider                = aws.secondary
+  bucket                  = aws_s3_bucket.s3_logs_replica.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logs_replica_encryption" {
+  provider = aws.secondary
+  bucket   = aws_s3_bucket.s3_logs_replica.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+
+resource "aws_s3_bucket_logging" "s3_logs_replica_logging" {
+  provider      = aws.secondary
+  bucket        = aws_s3_bucket.s3_logs_replica.id
+  target_bucket = aws_s3_bucket.s3_logs.id
+  target_prefix = "s3-logs-replica/"
+}
